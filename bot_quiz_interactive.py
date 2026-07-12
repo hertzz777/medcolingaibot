@@ -32,8 +32,8 @@ WEBAPP_URL = os.environ.get("WEBAPP_URL", "")
 ALLOWED_IDS = {int(x) for x in os.environ.get("ALLOWED_IDS", "").split(",") if x.strip()}
 
 GEMINI = "https://generativelanguage.googleapis.com/v1beta/models"
-TEXT_MODEL = "gemini-2.5-flash"
-IMAGE_MODEL = "gemini-2.5-flash-image"
+TEXT_MODEL = "gemini-flash-latest"          # stable alias — avoids 404 from retired versions
+IMAGE_MODEL = "gemini-2.5-flash-image"      # image model (needs billing)
 
 MEDICAL_RE = re.compile(
     r"\b(anatomy|organ|heart|liver|kidney|brain|lung|receptor|pharmacolog|drug|"
@@ -357,6 +357,29 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await route_content(update, ctx, t)
 
 
+async def models_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """List models this API key can actually use — handy for debugging 404s."""
+    if not await guard(update):
+        return
+    url = f"{GEMINI}?key={GEMINI_KEY}"
+    try:
+        async with httpx.AsyncClient(timeout=30) as c:
+            r = await c.get(url)
+            r.raise_for_status()
+            data = r.json()
+        names = []
+        for m in data.get("models", []):
+            methods = m.get("supportedGenerationMethods", [])
+            if "generateContent" in methods:
+                names.append(m["name"].replace("models/", ""))
+        if names:
+            await update.message.reply_text("Models your key supports:\n" + "\n".join(names[:40]))
+        else:
+            await update.message.reply_text("No generateContent models returned for this key.")
+    except Exception as e:
+        await update.message.reply_text(f"Couldn't list models: {e}")
+
+
 async def quiz_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not await guard(update):
         return
@@ -372,6 +395,7 @@ def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("quiz", quiz_cmd))
+    app.add_handler(CommandHandler("models", models_cmd))
     app.add_handler(CallbackQueryHandler(on_answer, pattern=r"^ans:"))
     app.add_handler(MessageHandler(filters.Document.ALL, on_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))

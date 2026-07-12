@@ -1,1 +1,1 @@
-worker: python bot_quiz_interactive.py
+worker: python main.py

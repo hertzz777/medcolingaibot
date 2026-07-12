@@ -1,7 +1,6 @@
 import os
 import re
 import json
-import base64
 import logging
 import httpx
 from io import BytesIO
@@ -13,7 +12,6 @@ from telegram import (
     InlineKeyboardMarkup,
     WebAppInfo,
     MenuButtonWebApp,
-    InputFile,
 )
 from telegram.ext import (
     Application,
@@ -33,13 +31,6 @@ ALLOWED_IDS = {int(x) for x in os.environ.get("ALLOWED_IDS", "").split(",") if x
 
 GEMINI = "https://generativelanguage.googleapis.com/v1beta/models"
 TEXT_MODEL = "gemini-flash-latest"          # stable alias — avoids 404 from retired versions
-IMAGE_MODEL = "gemini-2.5-flash-image"      # image model (needs billing)
-
-MEDICAL_RE = re.compile(
-    r"\b(anatomy|organ|heart|liver|kidney|brain|lung|receptor|pharmacolog|drug|"
-    r"dose|mechanism|disease|clinical|patient|medcoling|infographic)\b", re.IGNORECASE)
-IMG_DISCLAIMER = ("\n\n⚠️ Illustrative only — AI-generated, not anatomically exact. "
-                  "Not for clinical or study reference.")
 
 QUIZ_N = 5
 user_mode = {}         # chat_id -> mode
@@ -89,21 +80,6 @@ async def gemini_quiz(source: str) -> list:
     return clean
 
 
-async def gemini_image(prompt: str) -> bytes | None:
-    url = f"{GEMINI}/{IMAGE_MODEL}:generateContent?key={GEMINI_KEY}"
-    body = {"contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {"responseModalities": ["IMAGE"]}}
-    async with httpx.AsyncClient(timeout=120) as c:
-        r = await c.post(url, json=body)
-        r.raise_for_status()
-        data = r.json()
-    for part in data["candidates"][0]["content"]["parts"]:
-        inline = part.get("inline_data") or part.get("inlineData")
-        if inline and inline.get("data"):
-            return base64.b64decode(inline["data"])
-    return None
-
-
 # ---------------- File extraction ----------------
 async def extract_file_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> str | None:
     doc = update.message.document
@@ -144,7 +120,7 @@ async def guard(update: Update) -> bool:
 
 def menu() -> ReplyKeyboardMarkup:
     rows = [[KeyboardButton("📝 Quiz"), KeyboardButton("📄 Summary")],
-            [KeyboardButton("💬 Text"), KeyboardButton("🎨 Image")]]
+            [KeyboardButton("💬 Text")]]
     if WEBAPP_URL:
         rows.insert(0, [KeyboardButton("✨ Open App", web_app=WebAppInfo(url=WEBAPP_URL))])
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
@@ -154,7 +130,6 @@ MODE_MSG = {
     "quiz": "📝 Quiz mode. Paste text or upload a .txt / .pdf / .docx — I'll build an interactive quiz.",
     "summary": "📄 Summary mode. Paste text or upload a file to summarize.",
     "text": "💬 Text mode. Ask me anything.",
-    "image": "🎨 Image mode. Describe the picture you want.",
 }
 LETTERS = ["A", "B", "C", "D"]
 
@@ -261,33 +236,6 @@ async def do_summary(update: Update, ctx: ContextTypes.DEFAULT_TYPE, source: str
     await send_long(update, out)
 
 
-async def make_image(update: Update, ctx: ContextTypes.DEFAULT_TYPE, prompt: str):
-    if not prompt.strip():
-        await update.message.reply_text("Describe the image you want.")
-        return
-    await ctx.bot.send_chat_action(update.effective_chat.id, "upload_photo")
-    try:
-        img = await gemini_image(prompt)
-    except httpx.HTTPStatusError as e:
-        if e.response.status_code in (402, 429):
-            await update.message.reply_text(
-                "🎨 Image generation needs billing enabled on your Google key. Use another mode instead.")
-        else:
-            await update.message.reply_text(f"Image error ({e.response.status_code}).")
-        return
-    except Exception as e:
-        await update.message.reply_text(f"Image error: {e}")
-        return
-    if not img:
-        await update.message.reply_text("No image came back — try rephrasing.")
-        return
-    caption = "🎨 " + prompt[:800]
-    if MEDICAL_RE.search(prompt):
-        caption += IMG_DISCLAIMER
-    bio = BytesIO(img); bio.name = "image.png"
-    await update.message.reply_photo(photo=InputFile(bio), caption=caption[:1024])
-
-
 async def route_content(update: Update, ctx: ContextTypes.DEFAULT_TYPE, source: str):
     mode = user_mode.get(update.effective_chat.id, "quiz")
     if mode in ("quiz", "summary") and len(source.strip()) < 20:
@@ -300,8 +248,6 @@ async def route_content(update: Update, ctx: ContextTypes.DEFAULT_TYPE, source: 
         await start_quiz(update, ctx, source)
     elif mode == "summary":
         await do_summary(update, ctx, source)
-    elif mode == "image":
-        await make_image(update, ctx, source)
     else:
         await ctx.bot.send_chat_action(update.effective_chat.id, "typing")
         try:
@@ -321,8 +267,7 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"Hi {name}! ✦ I turn your notes into study material.\n\n"
         "📝 *Quiz* — interactive multiple-choice (tap answers)\n"
         "📄 *Summary* — key points\n"
-        "💬 *Text* — ask anything\n"
-        "🎨 *Image* — generate a picture\n\n"
+        "💬 *Text* — ask anything\n\n"
         "Pick a mode, then paste text or upload a file.",
         parse_mode="Markdown",
         reply_markup=menu(),
@@ -348,7 +293,7 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not await guard(update):
         return
     t = update.message.text
-    labels = {"📝 Quiz": "quiz", "📄 Summary": "summary", "💬 Text": "text", "🎨 Image": "image"}
+    labels = {"📝 Quiz": "quiz", "📄 Summary": "summary", "💬 Text": "text"}
     if t in labels:
         user_mode[update.effective_chat.id] = labels[t]
         quiz_state.pop(update.effective_chat.id, None)  # cancel any running quiz

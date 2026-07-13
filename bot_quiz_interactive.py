@@ -46,6 +46,17 @@ flashcard_state = {}   # chat_id -> {"cards":[...], "idx":int}
 
 
 # ---------------- Gemini ----------------
+def gemini_error_message(e: httpx.HTTPStatusError) -> str:
+    code = e.response.status_code
+    if code in (401, 403):
+        return f"Gemini rejected the API key ({code}). Check GEMINI_API_KEY."
+    if code == 429:
+        return f"Gemini quota/rate limit hit ({code}). Please try again in a moment."
+    if code == 503:
+        return f"Gemini is temporarily overloaded ({code}). Please try again in a moment."
+    return f"Gemini error ({code}). Please try again in a moment."
+
+
 async def gemini_text(prompt: str, temperature: float = 0.4) -> str:
     url = f"{GEMINI}/{TEXT_MODEL}:generateContent?key={GEMINI_KEY}"
     body = {"contents": [{"parts": [{"text": prompt}]}],
@@ -257,7 +268,7 @@ async def start_quiz(update: Update, ctx: ContextTypes.DEFAULT_TYPE, source: str
         await update.message.reply_text("Couldn't build a clean quiz from that. Try clearer or shorter text.")
         return
     except httpx.HTTPStatusError as e:
-        await update.message.reply_text(f"Gemini error ({e.response.status_code}). Check key/quota.")
+        await update.message.reply_text(gemini_error_message(e))
         return
     except Exception as e:
         await update.message.reply_text(f"Error: {e}")
@@ -333,7 +344,7 @@ async def start_flashcards(update: Update, ctx: ContextTypes.DEFAULT_TYPE, sourc
         await update.message.reply_text("Couldn't build a clean deck from that. Try clearer or shorter text.")
         return
     except httpx.HTTPStatusError as e:
-        await update.message.reply_text(f"Gemini error ({e.response.status_code}). Try again in a moment.")
+        await update.message.reply_text(gemini_error_message(e))
         return
     except Exception as e:
         await update.message.reply_text(f"Error: {e}")
@@ -366,7 +377,7 @@ async def do_summary(update: Update, ctx: ContextTypes.DEFAULT_TYPE, source: str
     try:
         out = await gemini_text(prompt, temperature=0.2)
     except httpx.HTTPStatusError as e:
-        out = f"Gemini is temporarily overloaded ({e.response.status_code}). Please try again in a moment."
+        out = gemini_error_message(e)
     except Exception as e:
         out = f"Error: {e}"
     await send_long(update, out)
@@ -398,7 +409,7 @@ async def route_content(update: Update, ctx: ContextTypes.DEFAULT_TYPE, source: 
         try:
             out = await gemini_text(prompt, temperature=0.4)
         except httpx.HTTPStatusError as e:
-            out = f"Gemini is temporarily overloaded ({e.response.status_code}). Please try again in a moment."
+            out = gemini_error_message(e)
         except Exception as e:
             out = f"Error: {e}"
         await send_long(update, out)

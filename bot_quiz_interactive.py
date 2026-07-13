@@ -61,16 +61,23 @@ async def gemini_text(prompt: str, temperature: float = 0.4) -> str:
 async def gemini_quiz(source: str) -> list:
     """Ask Gemini for quiz questions as strict JSON, return a list of dicts."""
     prompt = (
-        f"Create {QUIZ_N} multiple-choice questions based ONLY on the text below, "
-        "for a pharmacy/medical student. Return STRICT JSON only — no markdown, no "
-        "code fences, no commentary. Schema:\n"
+        f"You are writing an exam-quality quiz for a pharmacy/medical student. "
+        f"Create up to {QUIZ_N} multiple-choice questions based ONLY on the text "
+        "below — if the text doesn't contain enough distinct facts for that many "
+        "non-overlapping questions, create fewer rather than padding or repeating. "
+        "Every question must be answerable strictly from the text, with exactly "
+        "one clearly correct option among the four — the other three must be "
+        "plausible but unambiguously wrong. Do not invent facts, numbers, or "
+        "mechanisms not stated in the text. Double-check that the 'answer' index "
+        "actually points to the correct option before responding.\n\n"
+        "Return STRICT JSON only — no markdown, no code fences, no commentary, "
+        "no trailing commas. Schema:\n"
         '[{"q":"question text","options":["opt A","opt B","opt C","opt D"],'
-        '"answer":0,"explain":"one line why"}]\n'
-        '"answer" is the 0-based index of the correct option. '
-        "Do not invent facts not in the text.\n\n"
+        '"answer":0,"explain":"one line why, quoting or referencing the text"}]\n'
+        '"answer" is the 0-based index of the correct option.\n\n'
         f"TEXT:\n{source}"
     )
-    raw = await gemini_text(prompt, temperature=0.5)
+    raw = await gemini_text(prompt, temperature=0.25)
     # strip accidental code fences
     raw = re.sub(r"^```(json)?|```$", "", raw.strip(), flags=re.MULTILINE).strip()
     # grab the JSON array
@@ -91,15 +98,21 @@ async def gemini_quiz(source: str) -> list:
 async def gemini_flashcards(source: str) -> list:
     """Ask Gemini for flashcards as strict JSON, return a list of dicts."""
     prompt = (
-        f"Create {FLASHCARD_N} flashcards based ONLY on the text below, for a "
-        "pharmacy/medical student. Return STRICT JSON only — no markdown, no "
-        "code fences, no commentary. Schema:\n"
+        f"You are writing a study flashcard deck for a pharmacy/medical student. "
+        f"Create up to {FLASHCARD_N} flashcards based ONLY on the text below — if "
+        "the text doesn't support that many distinct, non-overlapping facts, "
+        "create fewer rather than padding or repeating the same idea twice. "
+        "Each card must test exactly one fact — never combine multiple facts on "
+        "one card. The 'front' is a single term or question; the 'back' is the "
+        "precise answer, stated only using information present in the text. "
+        "Do not invent facts, numbers, or mechanisms not stated in the text.\n\n"
+        "Return STRICT JSON only — no markdown, no code fences, no commentary, "
+        "no trailing commas. Schema:\n"
         '[{"front":"term or question","back":"concise answer or definition"}]\n'
-        "Keep each side under 200 characters. "
-        "Do not invent facts not in the text.\n\n"
+        "Keep each side under 200 characters.\n\n"
         f"TEXT:\n{source}"
     )
-    raw = await gemini_text(prompt, temperature=0.5)
+    raw = await gemini_text(prompt, temperature=0.25)
     raw = re.sub(r"^```(json)?|```$", "", raw.strip(), flags=re.MULTILINE).strip()
     m = re.search(r"\[.*\]", raw, re.DOTALL)
     if m:
@@ -335,12 +348,18 @@ async def send_long(update: Update, text: str):
 
 
 async def do_summary(update: Update, ctx: ContextTypes.DEFAULT_TYPE, source: str):
-    prompt = ("Summarize the text for a pharmacy/medical student: a 2-sentence overview, "
-              "then 5-8 key bullet points, then a 'High-yield:' line with the top takeaway. "
-              "Stay faithful to the text.\n\nTEXT:\n" + source)
+    prompt = (
+        "Summarize the text below for a pharmacy/medical student: a 2-sentence "
+        "overview, then 5-8 key bullet points, then a 'High-yield:' line with the "
+        "single most important takeaway. Use ONLY information present in the "
+        "text — do not add outside facts, context, or knowledge not stated there. "
+        "If the text is ambiguous, incomplete, or too short to summarize "
+        "meaningfully, say so plainly instead of filling gaps with guesses.\n\n"
+        "TEXT:\n" + source
+    )
     await ctx.bot.send_chat_action(update.effective_chat.id, "typing")
     try:
-        out = await gemini_text(prompt, temperature=0.3)
+        out = await gemini_text(prompt, temperature=0.2)
     except Exception as e:
         out = f"Error: {e}"
     await send_long(update, out)
@@ -361,9 +380,16 @@ async def route_content(update: Update, ctx: ContextTypes.DEFAULT_TYPE, source: 
     elif mode == "summary":
         await do_summary(update, ctx, source)
     else:
+        prompt = (
+            "You are a knowledgeable pharmacy/medical study assistant. Answer "
+            "the question below clearly and accurately. If you are not "
+            "confident about a fact, say so explicitly rather than guessing. "
+            "Keep the answer focused and well-structured.\n\n"
+            f"QUESTION:\n{source}"
+        )
         await ctx.bot.send_chat_action(update.effective_chat.id, "typing")
         try:
-            out = await gemini_text(source, temperature=0.6)
+            out = await gemini_text(prompt, temperature=0.4)
         except Exception as e:
             out = f"Error: {e}"
         await send_long(update, out)

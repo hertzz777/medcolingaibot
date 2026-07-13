@@ -26,8 +26,8 @@ from telegram.ext import (
 
 logging.basicConfig(level=logging.INFO)
 
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
+TELEGRAM_TOKEN = (os.environ.get("TELEGRAM_TOKEN") or "").strip() or None
+GEMINI_KEY = (os.environ.get("GEMINI_API_KEY") or "").strip() or None
 if not TELEGRAM_TOKEN or not GEMINI_KEY:
     missing = [name for name, val in
                (("TELEGRAM_TOKEN", TELEGRAM_TOKEN), ("GEMINI_API_KEY", GEMINI_KEY)) if not val]

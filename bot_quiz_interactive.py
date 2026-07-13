@@ -51,9 +51,9 @@ async def gemini_text(prompt: str, temperature: float = 0.4) -> str:
     body = {"contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": {"temperature": temperature}}
     async with httpx.AsyncClient(timeout=120) as c:
-        for attempt in range(3):
+        for attempt in range(5):
             r = await c.post(url, json=body)
-            if r.status_code == 503 and attempt < 2:
+            if r.status_code == 503 and attempt < 4:
                 await asyncio.sleep(2 * (attempt + 1))
                 continue
             r.raise_for_status()
@@ -365,6 +365,8 @@ async def do_summary(update: Update, ctx: ContextTypes.DEFAULT_TYPE, source: str
     await ctx.bot.send_chat_action(update.effective_chat.id, "typing")
     try:
         out = await gemini_text(prompt, temperature=0.2)
+    except httpx.HTTPStatusError as e:
+        out = f"Gemini is temporarily overloaded ({e.response.status_code}). Please try again in a moment."
     except Exception as e:
         out = f"Error: {e}"
     await send_long(update, out)
@@ -395,6 +397,8 @@ async def route_content(update: Update, ctx: ContextTypes.DEFAULT_TYPE, source: 
         await ctx.bot.send_chat_action(update.effective_chat.id, "typing")
         try:
             out = await gemini_text(prompt, temperature=0.4)
+        except httpx.HTTPStatusError as e:
+            out = f"Gemini is temporarily overloaded ({e.response.status_code}). Please try again in a moment."
         except Exception as e:
             out = f"Error: {e}"
         await send_long(update, out)

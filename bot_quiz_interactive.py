@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import asyncio
 import logging
 import httpx
 from io import BytesIO
@@ -43,9 +44,14 @@ async def gemini_text(prompt: str, temperature: float = 0.4) -> str:
     body = {"contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": {"temperature": temperature}}
     async with httpx.AsyncClient(timeout=120) as c:
-        r = await c.post(url, json=body)
-        r.raise_for_status()
-        data = r.json()
+        for attempt in range(3):
+            r = await c.post(url, json=body)
+            if r.status_code == 503 and attempt < 2:
+                await asyncio.sleep(2 * (attempt + 1))
+                continue
+            r.raise_for_status()
+            break
+    data = r.json()
     parts = data["candidates"][0]["content"]["parts"]
     return "".join(p.get("text", "") for p in parts).strip()
 

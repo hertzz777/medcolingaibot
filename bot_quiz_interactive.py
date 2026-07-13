@@ -409,7 +409,7 @@ async def route_content(update: Update, ctx: ContextTypes.DEFAULT_TYPE, source: 
         try:
             out = await gemini_text(prompt, temperature=0.4)
         except httpx.HTTPStatusError as e:
-            out = f"Gemini is temporarily overloaded ({e.response.status_code}). Please try again in a moment."
+            out = gemini_error_message(e)
         except Exception as e:
             out = f"Error: {e}"
         await send_long(update, out)

@@ -33,8 +33,10 @@ GEMINI = "https://generativelanguage.googleapis.com/v1beta/models"
 TEXT_MODEL = "gemini-flash-latest"          # stable alias — avoids 404 from retired versions
 
 QUIZ_N = 5
+FLASHCARD_N = 8
 user_mode = {}         # chat_id -> mode
 quiz_state = {}        # chat_id -> {"questions":[...], "idx":int, "score":int}
+flashcard_state = {}   # chat_id -> {"cards":[...], "idx":int}
 
 
 # ---------------- Gemini ----------------
@@ -80,6 +82,31 @@ async def gemini_quiz(source: str) -> list:
     return clean
 
 
+async def gemini_flashcards(source: str) -> list:
+    """Ask Gemini for flashcards as strict JSON, return a list of dicts."""
+    prompt = (
+        f"Create {FLASHCARD_N} flashcards based ONLY on the text below, for a "
+        "pharmacy/medical student. Return STRICT JSON only — no markdown, no "
+        "code fences, no commentary. Schema:\n"
+        '[{"front":"term or question","back":"concise answer or definition"}]\n'
+        "Keep each side under 200 characters. "
+        "Do not invent facts not in the text.\n\n"
+        f"TEXT:\n{source}"
+    )
+    raw = await gemini_text(prompt, temperature=0.5)
+    raw = re.sub(r"^```(json)?|```$", "", raw.strip(), flags=re.MULTILINE).strip()
+    m = re.search(r"\[.*\]", raw, re.DOTALL)
+    if m:
+        raw = m.group(0)
+    data = json.loads(raw)
+    clean = []
+    for item in data:
+        front, back = item.get("front"), item.get("back")
+        if front and back:
+            clean.append({"front": front, "back": back})
+    return clean
+
+
 # ---------------- File extraction ----------------
 async def extract_file_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> str | None:
     doc = update.message.document
@@ -119,8 +146,8 @@ async def guard(update: Update) -> bool:
 
 
 def menu() -> ReplyKeyboardMarkup:
-    rows = [[KeyboardButton("📝 Quiz"), KeyboardButton("📄 Summary")],
-            [KeyboardButton("💬 Text")]]
+    rows = [[KeyboardButton("📝 Quiz"), KeyboardButton("🗂 Flashcards")],
+            [KeyboardButton("📄 Summary"), KeyboardButton("💬 Text")]]
     if WEBAPP_URL:
         rows.insert(0, [KeyboardButton("✨ Open App", web_app=WebAppInfo(url=WEBAPP_URL))])
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
@@ -128,6 +155,7 @@ def menu() -> ReplyKeyboardMarkup:
 
 MODE_MSG = {
     "quiz": "📝 Quiz mode. Paste text or upload a .txt / .pdf / .docx — I'll build an interactive quiz.",
+    "flashcards": "🗂 Flashcard mode. Paste text or upload a file — I'll build a flashcard deck.",
     "summary": "📄 Summary mode. Paste text or upload a file to summarize.",
     "text": "💬 Text mode. Ask me anything.",
 }
@@ -218,6 +246,82 @@ async def start_quiz(update: Update, ctx: ContextTypes.DEFAULT_TYPE, source: str
     await send_question(chat_id, ctx)
 
 
+# ---------------- Flashcard flow ----------------
+async def send_flashcard(chat_id, ctx: ContextTypes.DEFAULT_TYPE):
+    st = flashcard_state[chat_id]
+    card = st["cards"][st["idx"]]
+    n = st["idx"] + 1
+    total = len(st["cards"])
+    buttons = [[InlineKeyboardButton("👁 Show answer", callback_data="flip")]]
+    await ctx.bot.send_message(
+        chat_id,
+        f"*Card {n}/{total}*\n\n{card['front']}",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
+
+
+async def on_flip(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    chat_id = query.message.chat_id
+    st = flashcard_state.get(chat_id)
+    if not st:
+        await query.edit_message_text("This flashcard deck has ended. Send new text to start another. 🗂")
+        return
+    card = st["cards"][st["idx"]]
+    n = st["idx"] + 1
+    total = len(st["cards"])
+    is_last = n == total
+    buttons = [[InlineKeyboardButton("🎉 Done" if is_last else "➡️ Next", callback_data="nextcard")]]
+    await query.edit_message_text(
+        f"*Card {n}/{total}*\n\n{card['front']}\n\n💡 {card['back']}",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
+
+
+async def on_next_card(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    chat_id = query.message.chat_id
+    st = flashcard_state.get(chat_id)
+    if not st:
+        return
+    st["idx"] += 1
+    if st["idx"] < len(st["cards"]):
+        await send_flashcard(chat_id, ctx)
+    else:
+        await ctx.bot.send_message(
+            chat_id,
+            "🎉 *Flashcard deck complete!*\nSend more text or a file to make another deck.",
+            parse_mode="Markdown",
+        )
+        flashcard_state.pop(chat_id, None)
+
+
+async def start_flashcards(update: Update, ctx: ContextTypes.DEFAULT_TYPE, source: str):
+    chat_id = update.effective_chat.id
+    await ctx.bot.send_chat_action(chat_id, "typing")
+    try:
+        cards = await gemini_flashcards(source)
+    except json.JSONDecodeError:
+        await update.message.reply_text("Couldn't build a clean deck from that. Try clearer or shorter text.")
+        return
+    except httpx.HTTPStatusError as e:
+        await update.message.reply_text(f"Gemini error ({e.response.status_code}). Try again in a moment.")
+        return
+    except Exception as e:
+        await update.message.reply_text(f"Error: {e}")
+        return
+    if not cards:
+        await update.message.reply_text("No usable flashcards came back — try more detailed text.")
+        return
+    flashcard_state[chat_id] = {"cards": cards, "idx": 0}
+    await update.message.reply_text(f"🗂 Flashcards ready — {len(cards)} cards. Tap to reveal!")
+    await send_flashcard(chat_id, ctx)
+
+
 # ---------------- Other modes ----------------
 async def send_long(update: Update, text: str):
     for i in range(0, len(text), 4000):
@@ -238,7 +342,7 @@ async def do_summary(update: Update, ctx: ContextTypes.DEFAULT_TYPE, source: str
 
 async def route_content(update: Update, ctx: ContextTypes.DEFAULT_TYPE, source: str):
     mode = user_mode.get(update.effective_chat.id, "quiz")
-    if mode in ("quiz", "summary") and len(source.strip()) < 20:
+    if mode in ("quiz", "flashcards", "summary") and len(source.strip()) < 20:
         await update.message.reply_text("Please send more text (a few sentences at least).")
         return
     if len(source) > 20000:
@@ -246,6 +350,8 @@ async def route_content(update: Update, ctx: ContextTypes.DEFAULT_TYPE, source: 
         await update.message.reply_text("ℹ️ Text was long — using the first part only.")
     if mode == "quiz":
         await start_quiz(update, ctx, source)
+    elif mode == "flashcards":
+        await start_flashcards(update, ctx, source)
     elif mode == "summary":
         await do_summary(update, ctx, source)
     else:
@@ -266,6 +372,7 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"Hi {name}! ✦ I turn your notes into study material.\n\n"
         "📝 *Quiz* — interactive multiple-choice (tap answers)\n"
+        "🗂 *Flashcards* — tap to reveal each answer\n"
         "📄 *Summary* — key points\n"
         "💬 *Text* — ask anything\n\n"
         "Pick a mode, then paste text or upload a file.",
@@ -293,10 +400,11 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not await guard(update):
         return
     t = update.message.text
-    labels = {"📝 Quiz": "quiz", "📄 Summary": "summary", "💬 Text": "text"}
+    labels = {"📝 Quiz": "quiz", "🗂 Flashcards": "flashcards", "📄 Summary": "summary", "💬 Text": "text"}
     if t in labels:
         user_mode[update.effective_chat.id] = labels[t]
-        quiz_state.pop(update.effective_chat.id, None)  # cancel any running quiz
+        quiz_state.pop(update.effective_chat.id, None)       # cancel any running quiz
+        flashcard_state.pop(update.effective_chat.id, None)  # cancel any running deck
         await update.message.reply_text(MODE_MSG[labels[t]])
         return
     await route_content(update, ctx, t)
@@ -336,12 +444,26 @@ async def quiz_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(MODE_MSG["quiz"])
 
 
+async def flashcards_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not await guard(update):
+        return
+    user_mode[update.effective_chat.id] = "flashcards"
+    src = " ".join(ctx.args)
+    if src:
+        await route_content(update, ctx, src)
+    else:
+        await update.message.reply_text(MODE_MSG["flashcards"])
+
+
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("quiz", quiz_cmd))
+    app.add_handler(CommandHandler("flashcards", flashcards_cmd))
     app.add_handler(CommandHandler("models", models_cmd))
     app.add_handler(CallbackQueryHandler(on_answer, pattern=r"^ans:"))
+    app.add_handler(CallbackQueryHandler(on_flip, pattern=r"^flip$"))
+    app.add_handler(CallbackQueryHandler(on_next_card, pattern=r"^nextcard$"))
     app.add_handler(MessageHandler(filters.Document.ALL, on_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
     app.run_polling()

@@ -1,5 +1,6 @@
 import os
 import re
+import sys
 import json
 import asyncio
 import logging
@@ -25,8 +26,12 @@ from telegram.ext import (
 
 logging.basicConfig(level=logging.INFO)
 
-TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
-GEMINI_KEY = os.environ["GEMINI_API_KEY"]
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
+if not TELEGRAM_TOKEN or not GEMINI_KEY:
+    missing = [name for name, val in
+               (("TELEGRAM_TOKEN", TELEGRAM_TOKEN), ("GEMINI_API_KEY", GEMINI_KEY)) if not val]
+    sys.exit(f"ERROR: missing required environment variable(s): {', '.join(missing)}")
 WEBAPP_URL = os.environ.get("WEBAPP_URL", "")
 ALLOWED_IDS = {int(x) for x in os.environ.get("ALLOWED_IDS", "").split(",") if x.strip()}
 

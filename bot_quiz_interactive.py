@@ -38,6 +38,8 @@ ALLOWED_IDS = {int(x) for x in os.environ.get("ALLOWED_IDS", "").split(",") if x
 GEMINI = "https://generativelanguage.googleapis.com/v1beta/models"
 TEXT_MODEL = "gemini-flash-latest"          # stable alias — avoids 404 from retired versions
 
+HTTP_CLIENT = httpx.AsyncClient(timeout=120)  # shared client — reuses connections across requests
+
 QUIZ_N = 5
 FLASHCARD_N = 8
 user_mode = {}         # chat_id -> mode
@@ -61,14 +63,13 @@ async def gemini_text(prompt: str, temperature: float = 0.4) -> str:
     url = f"{GEMINI}/{TEXT_MODEL}:generateContent?key={GEMINI_KEY}"
     body = {"contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": {"temperature": temperature}}
-    async with httpx.AsyncClient(timeout=120) as c:
-        for attempt in range(5):
-            r = await c.post(url, json=body)
-            if r.status_code == 503 and attempt < 4:
-                await asyncio.sleep(2 * (attempt + 1))
-                continue
-            r.raise_for_status()
-            break
+    for attempt in range(5):
+        r = await HTTP_CLIENT.post(url, json=body)
+        if r.status_code == 503 and attempt < 4:
+            await asyncio.sleep(2 * (attempt + 1))
+            continue
+        r.raise_for_status()
+        break
     data = r.json()
     parts = data["candidates"][0]["content"]["parts"]
     return "".join(p.get("text", "") for p in parts).strip()
@@ -468,10 +469,9 @@ async def models_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     url = f"{GEMINI}?key={GEMINI_KEY}"
     try:
-        async with httpx.AsyncClient(timeout=30) as c:
-            r = await c.get(url)
-            r.raise_for_status()
-            data = r.json()
+        r = await HTTP_CLIENT.get(url, timeout=30)
+        r.raise_for_status()
+        data = r.json()
         names = []
         for m in data.get("models", []):
             methods = m.get("supportedGenerationMethods", [])

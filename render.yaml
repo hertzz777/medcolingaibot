@@ -1,0 +1,17 @@
+services:
+  - type: worker
+    name: medcolingaibot
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot_quiz_interactive.py
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.4
+      - key: TELEGRAM_TOKEN
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: ALLOWED_IDS
+        sync: false
+      - key: WEBAPP_URL
+        sync: false

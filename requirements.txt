@@ -2,3 +2,4 @@ python-telegram-bot==21.6
 httpx
 pypdf
 python-docx
+psycopg2-binary

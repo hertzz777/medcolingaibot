@@ -20,17 +20,23 @@ from telegram.ext import (
     CommandHandler,
     MessageHandler,
     CallbackQueryHandler,
+    PreCheckoutQueryHandler,
     ContextTypes,
     filters,
 )
+
+import entitlements
+import payments
 
 logging.basicConfig(level=logging.INFO)
 
 TELEGRAM_TOKEN = (os.environ.get("TELEGRAM_TOKEN") or "").strip() or None
 GEMINI_KEY = (os.environ.get("GEMINI_API_KEY") or "").strip() or None
-if not TELEGRAM_TOKEN or not GEMINI_KEY:
+DATABASE_URL = (os.environ.get("DATABASE_URL") or "").strip() or None
+if not TELEGRAM_TOKEN or not GEMINI_KEY or not DATABASE_URL:
     missing = [name for name, val in
-               (("TELEGRAM_TOKEN", TELEGRAM_TOKEN), ("GEMINI_API_KEY", GEMINI_KEY)) if not val]
+               (("TELEGRAM_TOKEN", TELEGRAM_TOKEN), ("GEMINI_API_KEY", GEMINI_KEY),
+                ("DATABASE_URL", DATABASE_URL)) if not val]
     sys.exit(f"ERROR: missing required environment variable(s): {', '.join(missing)}")
 WEBAPP_URL = os.environ.get("WEBAPP_URL", "")
 ALLOWED_IDS = {int(x) for x in os.environ.get("ALLOWED_IDS", "").split(",") if x.strip()}
@@ -263,6 +269,14 @@ async def on_answer(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def start_quiz(update: Update, ctx: ContextTypes.DEFAULT_TYPE, source: str):
     chat_id = update.effective_chat.id
     await ctx.bot.send_chat_action(chat_id, "typing")
+    user_id = update.effective_user.id
+    if not entitlements.has_unlimited_access(user_id):
+        if not entitlements.try_consume_daily_quiz(user_id):
+            await update.message.reply_text(
+                "You've used today's free quiz. Come back tomorrow, or unlock unlimited quizzes:\n"
+                "/buy cardio_module — 200 ⭐\n/buy full_30d — 500 ⭐\n/buy lifetime — 2000 ⭐"
+            )
+            return
     try:
         questions = await gemini_quiz(source)
     except json.JSONDecodeError:
@@ -508,11 +522,15 @@ async def flashcards_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 def main():
+    entitlements.init_db()
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("quiz", quiz_cmd))
     app.add_handler(CommandHandler("flashcards", flashcards_cmd))
     app.add_handler(CommandHandler("models", models_cmd))
+    app.add_handler(CommandHandler("buy", payments.buy_cmd))
+    app.add_handler(PreCheckoutQueryHandler(payments.precheckout_callback))
+    app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, payments.successful_payment_callback))
     app.add_handler(CallbackQueryHandler(on_answer, pattern=r"^ans:"))
     app.add_handler(CallbackQueryHandler(on_flip, pattern=r"^flip$"))
     app.add_handler(CallbackQueryHandler(on_next_card, pattern=r"^nextcard$"))

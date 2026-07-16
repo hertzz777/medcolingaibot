@@ -1,0 +1,317 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Study Bot</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root {
+    --bg: #ffffff;
+    --text: #222222;
+    --hint: #777777;
+    --button: #2481cc;
+    --button-text: #ffffff;
+    --secondary-bg: #f0f0f0;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 16px;
+  }
+  h1 { font-size: 18px; margin: 0 0 12px; }
+  textarea {
+    width: 100%;
+    min-height: 140px;
+    padding: 10px;
+    border-radius: 10px;
+    border: 1px solid var(--secondary-bg);
+    background: var(--secondary-bg);
+    color: var(--text);
+    font-size: 15px;
+    resize: vertical;
+  }
+  .modes { display: flex; gap: 8px; margin: 12px 0; }
+  .mode-btn, .btn {
+    flex: 1;
+    padding: 10px;
+    border-radius: 10px;
+    border: none;
+    font-size: 15px;
+    cursor: pointer;
+  }
+  .mode-btn {
+    background: var(--secondary-bg);
+    color: var(--text);
+  }
+  .mode-btn.active {
+    background: var(--button);
+    color: var(--button-text);
+  }
+  .btn {
+    background: var(--button);
+    color: var(--button-text);
+    width: 100%;
+    margin-top: 12px;
+  }
+  .btn:disabled { opacity: 0.5; }
+  .option-btn {
+    display: block;
+    width: 100%;
+    text-align: left;
+    padding: 12px;
+    margin: 8px 0;
+    border-radius: 10px;
+    border: 1px solid var(--secondary-bg);
+    background: var(--secondary-bg);
+    color: var(--text);
+    font-size: 15px;
+    cursor: pointer;
+  }
+  .option-btn.correct { background: #4caf50; color: #fff; }
+  .option-btn.wrong { background: #e53935; color: #fff; }
+  .card-box {
+    padding: 24px 16px;
+    border-radius: 12px;
+    background: var(--secondary-bg);
+    text-align: center;
+    font-size: 17px;
+    min-height: 120px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .progress { color: var(--hint); font-size: 13px; margin-bottom: 8px; }
+  .explain { color: var(--hint); font-size: 13px; margin-top: 8px; }
+  .hidden { display: none; }
+  #error-view { color: #e53935; white-space: pre-line; }
+</style>
+</head>
+<body>
+
+<div id="setup-view">
+  <h1>📚 Study Bot</h1>
+  <div class="modes">
+    <button class="mode-btn active" id="mode-quiz">📝 Quiz</button>
+    <button class="mode-btn" id="mode-flashcards">🗂 Flashcards</button>
+  </div>
+  <textarea id="source-text" placeholder="Paste your notes here…"></textarea>
+  <button class="btn" id="generate-btn">Generate</button>
+</div>
+
+<div id="quiz-view" class="hidden">
+  <div class="progress" id="quiz-progress"></div>
+  <div id="quiz-question" style="font-size:16px; margin-bottom:12px;"></div>
+  <div id="quiz-options"></div>
+  <div class="explain hidden" id="quiz-explain"></div>
+  <button class="btn hidden" id="quiz-next-btn">Next</button>
+</div>
+
+<div id="flashcard-view" class="hidden">
+  <div class="progress" id="card-progress"></div>
+  <div class="card-box" id="card-box"></div>
+  <button class="btn" id="card-flip-btn">👁 Show answer</button>
+  <button class="btn hidden" id="card-next-btn">Next</button>
+</div>
+
+<div id="result-view" class="hidden">
+  <h1 id="result-title"></h1>
+  <div id="result-body" style="margin-bottom:12px;"></div>
+  <button class="btn" id="restart-btn">Start another</button>
+</div>
+
+<div id="error-view" class="hidden">
+  <div id="error-message"></div>
+  <button class="btn" id="error-back-btn">Back</button>
+</div>
+
+<script>
+const tg = window.Telegram && window.Telegram.WebApp;
+if (tg) {
+  tg.ready();
+  tg.expand();
+  const t = tg.themeParams || {};
+  const root = document.documentElement.style;
+  if (t.bg_color) root.setProperty("--bg", t.bg_color);
+  if (t.text_color) root.setProperty("--text", t.text_color);
+  if (t.hint_color) root.setProperty("--hint", t.hint_color);
+  if (t.button_color) root.setProperty("--button", t.button_color);
+  if (t.button_text_color) root.setProperty("--button-text", t.button_text_color);
+  if (t.secondary_bg_color) root.setProperty("--secondary-bg", t.secondary_bg_color);
+}
+const initData = tg ? tg.initData : "";
+
+const views = ["setup-view", "quiz-view", "flashcard-view", "result-view", "error-view"];
+function show(id) {
+  for (const v of views) document.getElementById(v).classList.toggle("hidden", v !== id);
+}
+
+let mode = "quiz";
+document.getElementById("mode-quiz").onclick = () => setMode("quiz");
+document.getElementById("mode-flashcards").onclick = () => setMode("flashcards");
+function setMode(m) {
+  mode = m;
+  document.getElementById("mode-quiz").classList.toggle("active", m === "quiz");
+  document.getElementById("mode-flashcards").classList.toggle("active", m === "flashcards");
+}
+
+const genBtn = document.getElementById("generate-btn");
+genBtn.onclick = async () => {
+  const text = document.getElementById("source-text").value.trim();
+  if (text.length < 20) {
+    showError("Please paste a bit more text (a few sentences at least).");
+    return;
+  }
+  genBtn.disabled = true;
+  genBtn.textContent = "Generating…";
+  try {
+    const endpoint = mode === "quiz" ? "/api/quiz" : "/api/flashcards";
+    const res = await fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ init_data: initData, text }),
+    });
+    const data = await res.json();
+    if (!res.ok || data.error) {
+      handleError(data);
+      return;
+    }
+    if (mode === "quiz") startQuiz(data.questions);
+    else startFlashcards(data.cards);
+  } catch (e) {
+    showError("Network error — please try again.");
+  } finally {
+    genBtn.disabled = false;
+    genBtn.textContent = "Generate";
+  }
+};
+
+function handleError(data) {
+  if (data.error === "quota_exceeded") {
+    showError(
+      "You've used today's free quiz. Come back tomorrow, or unlock unlimited quizzes:\n" +
+      "/buy cardio_module — 200 ⭐\n/buy full_30d — 500 ⭐\n/buy lifetime — 2000 ⭐"
+    );
+  } else if (data.error === "unauthorized") {
+    showError("Not authorized to use this bot.");
+  } else {
+    showError(data.message || "Something went wrong. Please try again.");
+  }
+}
+
+function showError(msg) {
+  document.getElementById("error-message").textContent = msg;
+  show("error-view");
+}
+document.getElementById("error-back-btn").onclick = () => show("setup-view");
+document.getElementById("restart-btn").onclick = () => show("setup-view");
+
+// ---------------- Quiz ----------------
+const LETTERS = ["A", "B", "C", "D"];
+let quiz = { questions: [], idx: 0, score: 0 };
+
+function startQuiz(questions) {
+  quiz = { questions, idx: 0, score: 0 };
+  show("quiz-view");
+  renderQuestion();
+}
+
+function renderQuestion() {
+  const q = quiz.questions[quiz.idx];
+  document.getElementById("quiz-progress").textContent =
+    `Question ${quiz.idx + 1}/${quiz.questions.length}`;
+  document.getElementById("quiz-question").textContent = q.q;
+  document.getElementById("quiz-explain").classList.add("hidden");
+  document.getElementById("quiz-next-btn").classList.add("hidden");
+  const optionsEl = document.getElementById("quiz-options");
+  optionsEl.innerHTML = "";
+  q.options.forEach((opt, i) => {
+    const btn = document.createElement("button");
+    btn.className = "option-btn";
+    btn.textContent = `${LETTERS[i]}) ${opt}`;
+    btn.onclick = () => onAnswer(i);
+    optionsEl.appendChild(btn);
+  });
+}
+
+function onAnswer(chosen) {
+  const q = quiz.questions[quiz.idx];
+  const buttons = document.querySelectorAll("#quiz-options .option-btn");
+  buttons.forEach((b, i) => {
+    b.disabled = true;
+    if (i === q.answer) b.classList.add("correct");
+    else if (i === chosen) b.classList.add("wrong");
+  });
+  if (chosen === q.answer) quiz.score++;
+  if (q.explain) {
+    const explainEl = document.getElementById("quiz-explain");
+    explainEl.textContent = q.explain;
+    explainEl.classList.remove("hidden");
+  }
+  const nextBtn = document.getElementById("quiz-next-btn");
+  nextBtn.classList.remove("hidden");
+  nextBtn.textContent = quiz.idx + 1 < quiz.questions.length ? "Next" : "See results";
+  nextBtn.onclick = () => {
+    quiz.idx++;
+    if (quiz.idx < quiz.questions.length) renderQuestion();
+    else finishQuiz();
+  };
+}
+
+function finishQuiz() {
+  const { score, questions } = quiz;
+  const total = questions.length;
+  const pct = Math.round((100 * score) / total);
+  let note;
+  if (pct === 100) note = "Perfect! 🏆";
+  else if (pct >= 70) note = "Great work! 💪";
+  else if (pct >= 40) note = "Good effort — review and retry. 📚";
+  else note = "Keep studying — you'll get there. 🌱";
+  document.getElementById("result-title").textContent = "🎯 Quiz complete!";
+  document.getElementById("result-body").textContent = `Score: ${score}/${total} (${pct}%)\n${note}`;
+  show("result-view");
+}
+
+// ---------------- Flashcards ----------------
+let deck = { cards: [], idx: 0 };
+
+function startFlashcards(cards) {
+  deck = { cards, idx: 0 };
+  show("flashcard-view");
+  renderCard();
+}
+
+function renderCard() {
+  const card = deck.cards[deck.idx];
+  document.getElementById("card-progress").textContent =
+    `Card ${deck.idx + 1}/${deck.cards.length}`;
+  document.getElementById("card-box").textContent = card.front;
+  document.getElementById("card-flip-btn").classList.remove("hidden");
+  document.getElementById("card-next-btn").classList.add("hidden");
+}
+
+document.getElementById("card-flip-btn").onclick = () => {
+  const card = deck.cards[deck.idx];
+  document.getElementById("card-box").textContent = card.back;
+  document.getElementById("card-flip-btn").classList.add("hidden");
+  const nextBtn = document.getElementById("card-next-btn");
+  nextBtn.classList.remove("hidden");
+  nextBtn.textContent = deck.idx + 1 < deck.cards.length ? "Next" : "Done";
+};
+
+document.getElementById("card-next-btn").onclick = () => {
+  deck.idx++;
+  if (deck.idx < deck.cards.length) {
+    renderCard();
+  } else {
+    document.getElementById("result-title").textContent = "🎉 Deck complete!";
+    document.getElementById("result-body").textContent = "Paste more text to make another deck.";
+    show("result-view");
+  }
+};
+</script>
+</body>
+</html>

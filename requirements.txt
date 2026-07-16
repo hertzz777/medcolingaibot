@@ -3,3 +3,5 @@ httpx
 pypdf
 python-docx
 psycopg2-binary
+fastapi
+uvicorn
